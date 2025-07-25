@@ -45,18 +45,11 @@ Platform: ${platform}
 Label them clearly as "Variation A" and "Variation B". Make sure each version is strictly different and more than 50 words.`;
 }
 
-// Get IAM token from IBM
-async function getIAMToken() {
-  const params = new URLSearchParams();
-  params.append("grant_type", "urn:ibm:params:oauth:grant-type:apikey");
-  params.append("apikey", process.env.IBM_API_KEY);
-
-  const response = await axios.post("https://iam.cloud.ibm.com/identity/token", params, {
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-  });
-
-  return response.data.access_token;
-}
+// Remove IBM IAM token logic and IBM endpoints
+// Add OpenRouter API key from environment
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "deepseek/deepseek-r1:free";
+const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
 
 // Helper to parse variations from AI response
 function parseVariations(content) {
@@ -96,38 +89,34 @@ function parseVariations(content) {
   return { contentA, contentB };
 }
 
-// Helper to get estimated metrics from IBM model
-async function getEstimatedMetrics(content, token, endpoint, projectId) {
+// Replace getEstimatedMetrics to use OpenRouter
+async function getEstimatedMetrics(content) {
   const metricsPrompt = `Given the following marketing campaign content, estimate the following metrics for a typical digital campaign targeting the specified audience: Open Rate (%), Click-Through Rate (%), and Conversion Rate (%).\n\nContent:\n${content}\n\nRespond in JSON format as {\"openRate\": number, \"clickThroughRate\": number, \"conversionRate\": number}.`;
 
   try {
     const response = await axios.post(
-      endpoint,
+      OPENROUTER_API_URL,
       {
-        model_id: "ibm/granite-3-8b-instruct",
-        input: metricsPrompt,
-        project_id: projectId,
-        parameters: {
-          temperature: 0.2,
-          max_new_tokens: 100,
-          decoding_method: "sample"
-        },
-        reset: true // Uncomment this if you want to reset the model's context/history because of it's biased responses.
+        model: OPENROUTER_MODEL,
+        messages: [
+          { role: "user", content: metricsPrompt }
+        ],
+        max_tokens: 200,
+        temperature: 0.2
       },
       {
         headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
+          Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+          "Content-Type": "application/json"
+        }
       }
     );
-    const text = response.data.results?.[0]?.generated_text || "";
+    const text = response.data.choices?.[0]?.message?.content || "";
     // Try to parse JSON from the response
     const match = text.match(/\{[\s\S]*\}/);
     if (match) {
       return JSON.parse(match[0]);
     }
-    // Fallback: return null if parsing fails
     return null;
   } catch (err) {
     console.error("Error getting estimated metrics:", err.response?.data || err.message);
@@ -135,51 +124,42 @@ async function getEstimatedMetrics(content, token, endpoint, projectId) {
   }
 }
 
-// Updated main generation route
+// Update /api/dashboard/post to use OpenRouter
 app.post("/api/dashboard/post", async (req, res) => {
   const request = req.body;
 
   try {
-    const token = await getIAMToken();
-
     const prompt = buildPrompt(request);
 
-    const endpoint = `https://${process.env.REGION}.ml.cloud.ibm.com/ml/v1-beta/generation/text?version=2024-05-29`;
-
-    // Use a fixed model for content generation
-    const workingModel = "ibm/granite-3-8b-instruct";
-
+    // Use OpenRouter API for content generation
     const response = await axios.post(
-      endpoint,
+      OPENROUTER_API_URL,
       {
-        model_id: workingModel,
-        input: prompt,
-        project_id: process.env.IBM_PROJECT_ID,
-        parameters: {
-          temperature: 0,
-          max_new_tokens: 2000, // Increased for two variations
-          decoding_method: "sample",
-          top_p: 1
-        },
-        reset: true, // Uncomment this if you want to reset the model's context/history because of it's biased responses.
+        model: OPENROUTER_MODEL,
+        messages: [
+          { role: "user", content: prompt }
+        ],
+        max_tokens: 2000,
+        temperature: 0.7,
+        top_p: 1
       },
       {
         headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
+          Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+          "Content-Type": "application/json"
+        }
       }
     );
 
-    const content = response.data.results?.[0]?.generated_text || "No content generated";
+    const content = response.data.choices?.[0]?.message?.content || "No content generated";
 
     // Parse the response to extract both variations
     const { contentA, contentB } = parseVariations(content);
 
-    // Get estimated metrics for each version
+    // Get estimated metrics for each version using OpenRouter
     const [metricsA, metricsB] = await Promise.all([
-      getEstimatedMetrics(contentA, token, endpoint, process.env.IBM_PROJECT_ID),
-      getEstimatedMetrics(contentB, token, endpoint, process.env.IBM_PROJECT_ID)
+      getEstimatedMetrics(contentA),
+      getEstimatedMetrics(contentB)
     ]);
 
     res.json({
@@ -193,7 +173,7 @@ app.post("/api/dashboard/post", async (req, res) => {
         content: contentB,
         metrics: metricsB || { openRate: null, clickThroughRate: null, conversionRate: null },
       },
-      modelUsed: workingModel,
+      modelUsed: OPENROUTER_MODEL,
       rawResponse: content // Include raw response for debugging
     });
   } catch (err) {
@@ -328,4 +308,4 @@ app.get("/api/ayrshare/test", async (req, res) => {
 });
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`✅ Granite API server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`✅ OpenRouter API server running on port ${PORT}`));

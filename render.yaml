@@ -6,5 +6,5 @@ services:
     buildCommand: npm install
     startCommand: npm start
     envVars:
-      - key: IBM_API_KEY
+      - key: OPENROUTER_API_KEY
         sync: false
